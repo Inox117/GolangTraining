@@ -1,2 +1,2 @@
 # GolangTraining
-A repository with various exercise that I add to do during recruitment process
+A repository with various exercises that I did during various recruitment process
