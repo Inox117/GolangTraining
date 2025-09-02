@@ -1,186 +1,293 @@
 package service
 
 import (
+	"encoding/csv"
 	"golang_training/CsvParser/app/model"
+	"reflect"
+	"strings"
 	"testing"
 )
 
-func TestHistoryService_RetrieveHistoryFromFile_FileDoesNotExist(t *testing.T) {
-	historyService := NewHistoryService()
-	_, err := historyService.RetrieveHistoryFromFile("data/notexist.csv")
+import (
+	"errors"
+)
+
+func TestCheckHeaderValidity(t *testing.T) {
+	tests := []struct {
+		name          string
+		headers       []string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:        "Valid headers",
+			headers:     []string{"date", "amount", "content"},
+			expectError: false,
+		},
+		{
+			name:          "Invalid headers - missing date",
+			headers:       []string{"amount", "content"},
+			expectError:   true,
+			errorContains: "invalid header, should have 3 columns",
+		},
+		{
+			name:          "Invalid headers - missing amount",
+			headers:       []string{"date", "content"},
+			expectError:   true,
+			errorContains: "invalid header, should have 3 columns",
+		},
+		{
+			name:          "Invalid headers - missing content",
+			headers:       []string{"date", "amount"},
+			expectError:   true,
+			errorContains: "invalid header, should have 3 columns",
+		},
+		{
+			name:          "Invalid headers - empty array",
+			headers:       []string{},
+			expectError:   true,
+			errorContains: "invalid header, should have 3 columns",
+		},
+		{
+			name:          "Invalid headers - wrong first column",
+			headers:       []string{"amount", "date", "content"},
+			expectError:   true,
+			errorContains: "invalid header, first column should be date",
+		},
+		{
+			name:          "Invalid headers - wrong second column",
+			headers:       []string{"date", "content", "amount"},
+			expectError:   true,
+			errorContains: "invalid header, second column should be amount",
+		},
+		{
+			name:          "Invalid headers - case sensitive",
+			headers:       []string{"date", "amount", "Content"},
+			expectError:   true,
+			errorContains: "invalid header, third column should be content",
+		},
+		{
+			name:          "Invalid headers - extra column",
+			headers:       []string{"date", "amount", "content", "extra"},
+			expectError:   true,
+			errorContains: "invalid header, should have 3 columns",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := NewHistoryService()
+
+			err := service.checkHeaderValidity(tt.headers)
+
+			// Vérifie si on s'attend à une erreur
+			if tt.expectError && err == nil {
+				t.Errorf("Expected an error for headers %v, but got nil", tt.headers)
+				return
+			}
+
+			// Vérifie si on ne s'attend pas à une erreur
+			if !tt.expectError && err != nil {
+				t.Errorf("Did not expect an error for headers %v, but got: %v", tt.headers, err)
+				return
+			}
+
+			// Si on s'attend à une erreur et qu'on en a une, vérifie si elle contient le message attendu
+			if tt.expectError && err != nil && tt.errorContains != "" {
+				if !errors.Is(err, errors.New(tt.errorContains)) && !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("Error message does not contain expected text. Got: %v, Want: %v",
+						err.Error(), tt.errorContains)
+				}
+			}
+		})
+	}
+}
+
+// Test avec des en-têtes nuls
+func TestCheckHeaderValidityWithNilHeaders(t *testing.T) {
+	service := NewHistoryService()
+	err := service.checkHeaderValidity(nil)
 	if err == nil {
-		t.Errorf("RetrieveHistoryFromFile should have returned an error")
+		t.Errorf("Expected an error for nil headers, but got nil")
 	}
 }
 
-func TestHistoryService_RetrieveHistoryFromFile_Success(t *testing.T) {
-	historyService := NewHistoryService()
-	history, err := historyService.RetrieveHistoryFromFile("./../../data/history.csv")
-	if err != nil {
-		t.Errorf("RetrieveHistoryFromFile should not have returned an error")
-	}
-	if history == nil {
-		t.Errorf("RetrieveHistoryFromFile should have returned a history")
-	}
-	if len(history.HistoryPerMonth) != 4 {
-		t.Errorf("RetrieveHistoryFromFile should have returned 4 records")
-	}
-	if len(history.HistoryPerMonth["202306"]) != 1 {
-		t.Errorf("RetrieveHistoryFromFile should have returned 1 record for 202306")
-	}
-	if len(history.HistoryPerMonth["202201"]) != 3 {
-		t.Errorf("RetrieveHistoryFromFile should have returned 3 records for 202201")
-	}
-	if len(history.HistoryPerMonth["202202"]) != 1 {
-		t.Errorf("RetrieveHistoryFromFile should have returned 1 record for 202202")
-	}
-	if len(history.HistoryPerMonth["202303"]) != 1 {
-		t.Errorf("RetrieveHistoryFromFile should have returned 1 record for 202303")
+func TestCheckHeaderValidityWithEmptyHeaders(t *testing.T) {
+	service := NewHistoryService()
+	err := service.checkHeaderValidity([]string{})
+	if err == nil {
+		t.Errorf("Expected an error for empty headers, but got nil")
 	}
 }
 
-func TestHistoryService_ProcessHistoryForGivenMonth_NoDataForGivenMonth(t *testing.T) {
-	historyService := NewHistoryService()
-	mockHistory := model.History{
-		HistoryPerMonth: map[string][]model.HistoryLine{
-			"202306": {
-				{
-					Date:    "2023/06/01",
-					Amount:  -100,
-					Content: "eating out",
-				},
-				{
-					Date:    "2023/06/02",
-					Amount:  -200,
-					Content: "eating out",
-				},
-				{
-					Date:    "2023/06/03",
-					Amount:  600,
-					Content: "salary",
-				},
-				{
-					Date:    "2023/06/22",
-					Amount:  400,
-					Content: "bonus",
-				},
-			},
-			"202301": {
-				{
-					Date:    "2023/03/01",
-					Amount:  600,
-					Content: "salary",
+func TestProcessLines(t *testing.T) {
+	tests := []struct {
+		name          string
+		csvContent    string
+		givenMonth    string
+		expected      *model.OutputData
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name: "Valid CSV content with matching month and only expenditure",
+			csvContent: `date,amount,content
+2022/01/25,-100000,rent
+2022/01/06,-10000,debit
+2022/01/05,-1000,eating out
+2022/02/01,50000,salary`,
+			givenMonth: "202201",
+			expected: &model.OutputData{
+				Period:           "2022/01",
+				TotalIncome:      0,
+				TotalExpenditure: -111000,
+				Transactions: []model.Transaction{
+					{Date: "2022/01/25", Amount: -100000, Content: "rent"},
+					{Date: "2022/01/06", Amount: -10000, Content: "debit"},
+					{Date: "2022/01/05", Amount: -1000, Content: "eating out"},
 				},
 			},
+			expectError: false,
+		},
+		{
+			name: "Valid CSV content with matching month and only income",
+			csvContent: `date,amount,content
+2022/01/15,200000,salary
+2022/02/01,50000,salary`,
+			givenMonth: "202201",
+			expected: &model.OutputData{
+				Period:           "2022/01",
+				TotalIncome:      200000,
+				TotalExpenditure: 0,
+				Transactions: []model.Transaction{
+					{Date: "2022/01/15", Amount: 200000, Content: "salary"},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid CSV content with matching month and both expenditure and income",
+			csvContent: `date,amount,content
+2022/01/25,-100000,rent
+2022/01/15,200000,salary
+2022/01/06,-10000,debit
+2022/01/05,-1000,eating out
+2022/02/01,50000,salary`,
+			givenMonth: "202201",
+			expected: &model.OutputData{
+				Period:           "2022/01",
+				TotalIncome:      200000,
+				TotalExpenditure: -111000,
+				Transactions: []model.Transaction{
+					{Date: "2022/01/25", Amount: -100000, Content: "rent"},
+					{Date: "2022/01/15", Amount: 200000, Content: "salary"},
+					{Date: "2022/01/06", Amount: -10000, Content: "debit"},
+					{Date: "2022/01/05", Amount: -1000, Content: "eating out"},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid CSV content with no matching month",
+			csvContent: `date,amount,content
+2022/02/25,-100000,rent
+2022/02/06,-10000,debit
+2022/02/05,-1000,eating out`,
+			givenMonth: "202201",
+			expected: &model.OutputData{
+				Period:           "2022/01",
+				TotalIncome:      0,
+				TotalExpenditure: 0,
+				Transactions:     []model.Transaction{},
+			},
+			expectError: false,
+		},
+		{
+			name: "Invalid amount format",
+			csvContent: `date,amount,content
+2022/01/25,invalid,rent`,
+			givenMonth:    "202201",
+			expectError:   true,
+			errorContains: "ParseInt",
+		},
+		{
+			name: "Empty CSV content",
+			csvContent: `date,amount,content
+`,
+			givenMonth: "202201",
+			expected: &model.OutputData{
+				Period:           "2022/01",
+				TotalIncome:      0,
+				TotalExpenditure: 0,
+				Transactions:     []model.Transaction{},
+			},
+			expectError: false,
 		},
 	}
-	outputData := historyService.ProcessHistoryForGivenMonth(&mockHistory, "202305")
-	if outputData == nil {
-		t.Errorf("ProcessHistoryForGivenMonth should have returned a output")
-	}
-	if outputData.Period != "2023/05" {
-		t.Errorf("outputData Period should have been 2023/05 got %s", outputData.Period)
-	}
-	if outputData.TotalIncome != 0 {
-		t.Errorf("outputData TotalIncome should have been 0 got %d", outputData.TotalIncome)
-	}
-	if outputData.TotalExpenditure != 0 {
-		t.Errorf("outputData TotalExpenditure should have been 0 got %d", outputData.TotalExpenditure)
-	}
-	if len(outputData.Transactions) != 0 {
-		t.Errorf("outputData should have 0 Transactions got %d", len(outputData.Transactions))
-	}
-}
 
-func TestHistoryService_ProcessHistoryForGivenMonth_DataForGivenMonth(t *testing.T) {
-	historyService := NewHistoryService()
-	mockHistory := model.History{
-		HistoryPerMonth: map[string][]model.HistoryLine{
-			"202306": {
-				{
-					Date:    "2023/06/01",
-					Amount:  -100,
-					Content: "eating out",
-				},
-				{
-					Date:    "2023/06/02",
-					Amount:  -200,
-					Content: "eating out",
-				},
-				{
-					Date:    "2023/06/03",
-					Amount:  600,
-					Content: "salary",
-				},
-				{
-					Date:    "2023/06/22",
-					Amount:  400,
-					Content: "bonus",
-				},
-			},
-			"202301": {
-				{
-					Date:    "2023/03/01",
-					Amount:  600,
-					Content: "salary",
-				},
-			},
-		},
-	}
-	outputData := historyService.ProcessHistoryForGivenMonth(&mockHistory, "202306")
-	if outputData == nil {
-		t.Errorf("ProcessHistoryForGivenMonth should have returned a output")
-	}
-	if outputData.Period != "2023/06" {
-		t.Errorf("outputData Period should have been 2023/06 got %s", outputData.Period)
-	}
-	if outputData.TotalIncome != 1000 {
-		t.Errorf("outputData TotalIncome should have been 1000 got %d", outputData.TotalIncome)
-	}
-	if outputData.TotalExpenditure != -300 {
-		t.Errorf("outputData TotalExpenditure should have been 0 got %d", outputData.TotalExpenditure)
-	}
-	if len(outputData.Transactions) != 4 {
-		t.Errorf("outputData should have 4 Transactions got %d", len(outputData.Transactions))
-	}
-	transaction := outputData.Transactions[0]
-	if transaction.Date != "2023/06/01" {
-		t.Errorf("transaction Date should have been 2023/06/01 got %s", transaction.Date)
-	}
-	if transaction.Amount != -100 {
-		t.Errorf("transaction Amount should have been -100 got %d", transaction.Amount)
-	}
-	if transaction.Content != "eating out" {
-		t.Errorf("transaction Content should have been eating out got %s", transaction.Content)
-	}
-	transaction = outputData.Transactions[1]
-	if transaction.Date != "2023/06/02" {
-		t.Errorf("transaction Date should have been 2023/06/02 got %s", transaction.Date)
-	}
-	if transaction.Amount != -200 {
-		t.Errorf("transaction Amount should have been -200 got %d", transaction.Amount)
-	}
-	if transaction.Content != "eating out" {
-		t.Errorf("transaction Content should have been eating out got %s", transaction.Content)
-	}
-	transaction = outputData.Transactions[2]
-	if transaction.Date != "2023/06/03" {
-		t.Errorf("transaction Date should have been 2023/06/03 got %s", transaction.Date)
-	}
-	if transaction.Amount != 600 {
-		t.Errorf("transaction Amount should have been 600 got %d", transaction.Amount)
-	}
-	if transaction.Content != "salary" {
-		t.Errorf("transaction Content should have been salary got %s", transaction.Content)
-	}
-	transaction = outputData.Transactions[3]
-	if transaction.Date != "2023/06/22" {
-		t.Errorf("transaction Date should have been 2023/06/22 got %s", transaction.Date)
-	}
-	if transaction.Amount != 400 {
-		t.Errorf("transaction Amount should have been 400 got %d", transaction.Amount)
-	}
-	if transaction.Content != "bonus" {
-		t.Errorf("transaction Content should have been bonus got %s", transaction.Content)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Initialiser le service
+			service := NewHistoryService()
+
+			// Créer un reader CSV à partir de la chaîne de contenu
+			reader := csv.NewReader(strings.NewReader(tt.csvContent))
+
+			// Ignorer la première ligne d'en-tête qui a déjà été lue
+			_, err := reader.Read()
+			if err != nil && tt.csvContent != "" {
+				t.Fatalf("Failed to read header: %v", err)
+			}
+
+			// Appeler la fonction à tester
+			result, err := service.processLines(reader, tt.givenMonth)
+
+			// Vérifier les erreurs
+			if tt.expectError && err == nil {
+				t.Errorf("Expected an error but got nil")
+				return
+			}
+
+			if !tt.expectError && err != nil {
+				t.Errorf("Did not expect an error but got: %v", err)
+				return
+			}
+
+			if tt.expectError && err != nil {
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("Error message does not contain expected text. Got: %v, Want: %v",
+						err.Error(), tt.errorContains)
+				}
+				return
+			}
+
+			// Vérifier le résultat
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("Result does not match expected. \nGot: %+v, \nWant: %+v", result, tt.expected)
+
+				// Afficher plus de détails sur la différence
+				if len(result.Transactions) != len(tt.expected.Transactions) {
+					t.Errorf("Transaction length mismatch: got %d, want %d",
+						len(result.Transactions), len(tt.expected.Transactions))
+				} else {
+					for i, got := range result.Transactions {
+						want := tt.expected.Transactions[i]
+						if !reflect.DeepEqual(got, want) {
+							t.Errorf("Transaction at index %d differs: \ngot: %+v, \nwant: %+v", i, got, want)
+						}
+					}
+				}
+
+				if result.TotalIncome != tt.expected.TotalIncome {
+					t.Errorf("TotalIncome mismatch: got %d, want %d",
+						result.TotalIncome, tt.expected.TotalIncome)
+				}
+
+				if result.TotalExpenditure != tt.expected.TotalExpenditure {
+					t.Errorf("TotalExpenditure mismatch: got %d, want %d",
+						result.TotalExpenditure, tt.expected.TotalExpenditure)
+				}
+			}
+		})
 	}
 }

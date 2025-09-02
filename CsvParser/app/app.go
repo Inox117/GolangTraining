@@ -35,11 +35,19 @@ func (app *CsvParserApp) Run() error {
 		return errors.New("specified month is not valid")
 	}
 	// We retrieve the history from the specified file path
-	historyFromFile, err := app.historyService.RetrieveHistoryFromFile(arguments.HistoryFilePath)
+	/*historyFromFile, err := app.historyService.RetrieveHistoryFromFile(arguments.HistoryFilePath)
 	if err != nil {
 		return errors.New("could not retrieve history from file")
 	}
 	outputData := app.historyService.ProcessHistoryForGivenMonth(historyFromFile, arguments.SpecifiedMonth)
+	jsonData, err := json.MarshalIndent(outputData, "", " ")
+	if err != nil {
+		return errors.New("could not marshal json data")
+	}*/
+	outputData, err := app.historyService.ProcessFile(arguments.HistoryFilePath, arguments.SpecifiedMonth)
+	if err != nil {
+		return errors.New("could not process file")
+	}
 	jsonData, err := json.MarshalIndent(outputData, "", " ")
 	if err != nil {
 		return errors.New("could not marshal json data")

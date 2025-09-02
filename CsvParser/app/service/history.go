@@ -1,12 +1,14 @@
 package service
 
 import (
+	"encoding/csv"
+	"errors"
 	"golang_training/CsvParser/app/model"
+	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
-
-	"github.com/gocarina/gocsv"
 )
 
 // HistoryService is the service used to retrieve and process the CSV data
@@ -16,55 +18,80 @@ func NewHistoryService() *HistoryService {
 	return &HistoryService{}
 }
 
-func (h *HistoryService) RetrieveHistoryFromFile(historyPath string) (*model.History, error) {
-	historyFile, err := os.Open(historyPath)
+func (h *HistoryService) ProcessFile(historyPath string, givenMonth string) (*model.OutputData, error) {
+	file, err := os.Open(historyPath)
 	if err != nil {
 		return nil, err
 	}
-	defer historyFile.Close()
-	var historyLines []model.HistoryLine
+	defer file.Close()
 
-	err = gocsv.UnmarshalFile(historyFile, &historyLines)
+	reader := csv.NewReader(file)
+	// we check the validity of the header
+	headers, err := reader.Read()
 	if err != nil {
 		return nil, err
 	}
-
-	var history model.History
-	historyPerMonth := make(map[string][]model.HistoryLine)
-	for _, historyLine := range historyLines {
-		historyMonth := historyLine.Date[:8]
-		historyMonth = strings.Replace(historyMonth, "/", "", -1)
-		if historyPerMonth[historyMonth] == nil {
-			historyPerMonth[historyMonth] = []model.HistoryLine{}
-		}
-		historyPerMonth[historyMonth] = append(historyPerMonth[historyMonth], historyLine)
+	err = h.checkHeaderValidity(headers)
+	if err != nil {
+		return nil, err
 	}
-	history.HistoryPerMonth = historyPerMonth
-	return &history, nil
+	// we will now process the CSV file line by line
+	output, err := h.processLines(reader, givenMonth)
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
 }
 
-func (h *HistoryService) ProcessHistoryForGivenMonth(history *model.History, givenMonth string) *model.OutputData {
-	output := model.OutputData{
-		Period: givenMonth[:4] + "/" + givenMonth[4:],
+func (h *HistoryService) checkHeaderValidity(headers []string) error {
+	if len(headers) != 3 {
+		return errors.New("invalid header, should have 3 columns")
 	}
+	if headers[0] != "date" {
+		return errors.New("invalid header, first column should be date")
+	}
+	if headers[1] != "amount" {
+		return errors.New("invalid header, second column should be amount")
+	}
+	if headers[2] != "content" {
+		return errors.New("invalid header, third column should be content")
+	}
+	return nil
+}
+
+func (h *HistoryService) processLines(reader *csv.Reader, givenMonth string) (*model.OutputData, error) {
 	var totalIncome int64
 	var totalExpenditure int64
 	transactions := make([]model.Transaction, 0)
-	monthlyData := history.HistoryPerMonth[givenMonth]
-	for _, historyLine := range monthlyData {
-		// No need to handle the "== 0" case
-		// There is no point in spending or receiving 0 (Whatever currency)
-		if historyLine.Amount > 0 {
-			totalIncome += historyLine.Amount
+	for {
+		record, err := reader.Read()
+		// Check if we have reached the end of the file
+		if err == io.EOF {
+			break
 		}
-		if historyLine.Amount < 0 {
-			totalExpenditure += historyLine.Amount
+		date := strings.Replace(record[0], "/", "", -1)
+		// we check the validity of the specified month
+		if date[:6] == givenMonth {
+			// we convert the CSV record to a History object
+			amount, err := strconv.ParseInt(record[1], 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			if amount > 0 {
+				totalIncome += amount
+			}
+			if amount < 0 {
+				totalExpenditure += amount
+			}
+			transactions = append(transactions, model.Transaction{
+				Date:    record[0],
+				Amount:  amount,
+				Content: record[2],
+			})
 		}
-		transactions = append(transactions, model.Transaction{
-			Date:    historyLine.Date,
-			Amount:  historyLine.Amount,
-			Content: historyLine.Content,
-		})
+	}
+	output := &model.OutputData{
+		Period: givenMonth[:4] + "/" + givenMonth[4:],
 	}
 	// transactions have to be sorted in descending order
 	sort.Slice(transactions, func(i, j int) bool {
@@ -73,5 +100,5 @@ func (h *HistoryService) ProcessHistoryForGivenMonth(history *model.History, giv
 	output.TotalIncome = totalIncome
 	output.TotalExpenditure = totalExpenditure
 	output.Transactions = transactions
-	return &output
+	return output, nil
 }
